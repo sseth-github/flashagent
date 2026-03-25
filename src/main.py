@@ -1,80 +1,94 @@
 import os
+import sys
 from datetime import datetime
-from constants import *
 
-from apify_client import ApifyClient
-from google import genai
-from twilio.rest import Client
-
+# Now that constants.py is in the same folder (src/), import it directly
 try:
-    from constants import *
+    import constants
 except ImportError:
-    print("Error: Could not find constants.py. Ensure it is in the root directory.")
+    print("Error: constants.py not found in src/ folder.")
     sys.exit(1)
 
 from apify_client import ApifyClient
 from google import genai
 from twilio.rest import Client
 
-# Initialize Clients using the NEW google-genai SDK
-apify_client = ApifyClient(APIFY_API_TOKEN)
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+# Initialize Clients using variables from the imported constants module
+# Note: Ensure these names match exactly what is in your constants.py
+apify_client = ApifyClient(constants.APIFY_API_TOKEN)
+gemini_client = genai.Client(api_key=constants.GEMINI_API_KEY)
+twilio_client = Client(constants.TWILIO_ACCOUNT_SID, constants.TWILIO_AUTH_TOKEN)
 
 def scrape_data():
-    print("Step 1: Scraping Bangalore trends...")
-    # Scrape Reddit - focusing on local context
+    print("Step 1: Scraping Bangalore-specific trends...")
+    
+    # Scrape Reddit (r/bangalore, r/india, r/businessideas)
     reddit_results = apify_client.actor("trudax/reddit-scraper").call(run_input={
         "searchTerms": ["Bangalore business", "Bangalore startup problems", "niche Bangalore"],
         "maxItems": 10
     })
     
-    # Scrape Twitter/X Lite
+    # Scrape Twitter/X (Search for local gaps)
     twitter_results = apify_client.actor("apidojo/tweet-scraper-lite").call(run_input={
-        "searchTerms": ["Bangalore business idea", "Bangalore service gap"],
+        "searchTerms": ["Bangalore service gap", "Bangalore business idea"],
         "maxItems": 10
     })
     
-    data = ""
+    combined_raw_text = ""
+    
+    print("Extracting Reddit data...")
     for item in apify_client.dataset(reddit_results["defaultDatasetId"]).iterate_items():
-        data += f"Reddit: {item.get('title', '')} - {item.get('selftext', '')[:200]}\n"
+        combined_raw_text += f"SOURCE: Reddit | TITLE: {item.get('title', '')} | CONTENT: {item.get('selftext', '')[:300]}\n\n"
+        
+    print("Extracting Twitter data...")
     for item in apify_client.dataset(twitter_results["defaultDatasetId"]).iterate_items():
-        data += f"Twitter: {item.get('full_text', '')}\n"
-    return data
+        combined_raw_text += f"SOURCE: Twitter | CONTENT: {item.get('full_text', '')}\n\n"
+        
+    return combined_raw_text
 
 def analyze_and_send():
-    print(f"[{datetime.now()}] Starting Daily Scout...")
+    print(f"[{datetime.now()}] Starting Daily Scout Analysis...")
     try:
+        # 1. Fetch raw data from Apify
         raw_info = scrape_data()
         
-        # Using the new SDK syntax for Gemini 2.0 Flash
+        if not raw_info.strip():
+            print("No data found from scrapers.")
+            return
+
+        # 2. Analyze with Gemini 2.0 Flash (New SDK Syntax)
         prompt = f"""
-        Analyze these Bangalore social media trends: {raw_info}
+        System: You are a professional business scout specializing in the Bangalore (Bengaluru) market.
         
-        Find the 2 best Small-to-Medium Business (SMB) ideas for Bangalore.
-        Evaluate based on:
+        Data: {raw_info}
+        
+        Task: Based on the provided social media data, find the 2 best Small-to-Medium Business (SMB) ideas specifically for Bangalore.
+        
+        Evaluate each idea on:
         - Scalability (1-10)
-        - Investment Level (Low/Med)
-        - Bangalore 'Why Now' factor (e.g. traffic, water, shifting demographics)
+        - Initial Investment (Low/Medium)
+        - The 'Bangalore Edge': Why this works here specifically (e.g., solving traffic, targeting tech-workers, water issues, or local hobbies).
         
-        Format as a clean, catchy WhatsApp message with emojis.
+        Format: Create a clean, punchy WhatsApp message using emojis. Keep it readable.
         """
         
+        print("Generating business ideas with Gemini...")
         response = gemini_client.models.generate_content(
             model="gemini-2.0-flash",
             contents=prompt
         )
         
-        # Send via Twilio
+        # 3. Send via Twilio WhatsApp
+        print("Sending WhatsApp message...")
         twilio_client.messages.create(
-            from_=TWILIO_WHATSAPP_FROM,
-            body=f"🚀 *Bangalore Business Scout* 🚀\n\n{response.text}",
-            to=TWILIO_WHATSAPP_TO
+            from_=constants.TWILIO_WHATSAPP_FROM,
+            body=f"🚀 *Daily Bangalore Business Scout* 🚀\n\n{response.text}",
+            to=constants.TWILIO_WHATSAPP_TO
         )
-        print("Success: Message sent to WhatsApp.")
+        print("Success! Check your WhatsApp.")
         
     except Exception as e:
-        print(f"Error occurred: {e}")
+        print(f"FAILED: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
