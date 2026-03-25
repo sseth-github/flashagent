@@ -4,7 +4,10 @@ from datetime import datetime
 from apify_client import ApifyClient
 import google.generativeai as genai
 from twilio.rest import Client
+# Add the parent directory (root) to the system path so it can find constants.py
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from constants import *
+
 
 # Initialize Clients
 apify_client = ApifyClient(APIFY_API_TOKEN)
