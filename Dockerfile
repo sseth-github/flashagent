@@ -1,20 +1,18 @@
-# Use the official Python slim image as the base image
+# Upgrade to 3.12 for better compatibility and fewer warnings
 FROM python:3.12-slim
 
-# Set the working directory
 WORKDIR /app
 
-# Copy the requirements file into the container
-COPY requirements.txt .
+# Crucial: This tells Python to look in the root for constants.py
+ENV PYTHONPATH="/app"
 
-# Install any dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create a data directory
+# Ensure the data directory exists for your logs/db
 RUN mkdir -p /app/data
 
-# Copy the rest of the application code into the container
 COPY . .
 
-# Command to run the application
-CMD ["python", "app.py"]
+# Use the full path for the command
+CMD ["python", "src/main.py"]
