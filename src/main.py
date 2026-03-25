@@ -1,7 +1,7 @@
 import os
 import sys
 from datetime import datetime
-import constants # Now in the same src/ folder
+import constants
 
 from apify_client import ApifyClient
 from google import genai
@@ -9,67 +9,63 @@ from twilio.rest import Client
 
 # Initialize Clients
 apify_client = ApifyClient(constants.APIFY_API_TOKEN)
+
+# Verify Gemini Key exists before initializing
+if not constants.GEMINI_API_KEY:
+    print("CRITICAL: GEMINI_API_KEY is empty. Check Railway Variables.")
+    sys.exit(1)
+
 gemini_client = genai.Client(api_key=constants.GEMINI_API_KEY)
 twilio_client = Client(constants.TWILIO_ACCOUNT_SID, constants.TWILIO_AUTH_TOKEN)
 
 def scrape_reddit():
     print("Step 1: Scraping Reddit via PeakyDev...")
     try:
-        # Using the specific actor you requested
+        # PeakyDev requires at least 100 maxPosts
         run_input = {
             "queries": ["Bangalore business problems", "Bangalore startup niche"],
-            "maxPosts": 5,
-            "includeComments": True
+            "maxPosts": 100,
+            "includeComments": False # Set to False to stay under credit limits
         }
         run = apify_client.actor("peakydev/reddit-scraper-post-comments-users").call(run_input=run_input)
-        
+
         data = ""
         for item in apify_client.dataset(run["defaultDatasetId"]).iterate_items():
-            data += f"Reddit Post: {item.get('title', '')} | Comments: {str(item.get('comments', []))[:500]}\n"
-        return data
+            data += f"Post: {item.get('title', '')}\n"
+        return data if data else "No specific Reddit trends found today."
     except Exception as e:
         print(f"Reddit Scraping failed: {e}")
-        return "No Reddit data found."
+        return "Scraping failed, relying on Google Search."
 
 def analyze_and_send():
-    print(f"[{datetime.now()}] Starting Hybrid Scout (Reddit + Google Search)...")
+    print(f"[{datetime.now()}] Starting Hybrid Scout...")
     try:
-        # 1. Get raw data from your new Reddit Actor
         reddit_data = scrape_reddit()
-        
-        # 2. Use Gemini with GOOGLE SEARCH enabled
-        # This fills in the gaps from X/Twitter without needing a paid actor
+
         prompt = f"""
-        I have some Reddit data from Bangalore: {reddit_data}
-        
-        Using your built-in Google Search tool, find the latest (March 2026) 
-        business complaints or service gaps mentioned on Twitter/X or 
-        Bangalore local news regarding infrastructure, tech-life, or lifestyle.
-        
-        Based on both sources, suggest 2 high-potential SMB ideas for Bangalore.
-        Evaluate on: Scalability, Low/Med Investment, and 'Why Bangalore?'.
-        
-        Format as a punchy WhatsApp message with emojis.
+        Reddit Context: {reddit_data}
+
+        Task: Use Google Search to find current (2026) service gaps in Bangalore.
+        Combine with the Reddit info to suggest 2 niche SMB ideas.
+        Format for WhatsApp with emojis.
         """
-        
-        print("Gemini is searching Google and analyzing Reddit...")
-        # Note: The 'google_search' tool is passed in the config
+
+        print("Gemini is searching Google...")
+        # Note: 'google_search' is the tool name
         response = gemini_client.models.generate_content(
             model="gemini-2.0-flash",
             contents=prompt,
-            config={
-                'tools': [{'google_search': {}}]
-            }
+            config={'tools': [{'google_search': {}}]}
         )
-        
-        # 3. Send via Twilio
+
+        print("Sending WhatsApp...")
         twilio_client.messages.create(
             from_=constants.TWILIO_WHATSAPP_FROM,
             body=f"🚀 *Bangalore Business Scout* 🚀\n\n{response.text}",
             to=constants.TWILIO_WHATSAPP_TO
         )
-        print("Success! Check your WhatsApp.")
-        
+        print("Success!")
+
     except Exception as e:
         print(f"FAILED: {e}")
         sys.exit(1)
