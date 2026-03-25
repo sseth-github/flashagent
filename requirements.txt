@@ -1,6 +1,6 @@
-Apify
-Gemini
-APScheduler
-Twilio
-SQLAlchemy
-logging
+apify-client
+google-generativeai
+apscheduler
+twilio
+sqlalchemy
+python-dotenv
