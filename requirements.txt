@@ -1,6 +1,4 @@
 apify-client
 google-generativeai
-apscheduler
 twilio
-sqlalchemy
 python-dotenv
