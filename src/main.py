@@ -15,66 +15,78 @@ twilio_client = Client(constants.TWILIO_ACCOUNT_SID, constants.TWILIO_AUTH_TOKEN
 def scrape_reddit():
     print("Step 1: Scraping Reddit via PeakyDev...")
     try:
+        # Broadened queries to ensure we get more than 1 result
         run_input = {
-            "queries": ["Bangalore business problems", "Bangalore startup niche"],
-            "maxPosts": 100, # PeakyDev minimum
+            "queries": [
+                "Bangalore business problems", 
+                "Bangalore startup niche", 
+                "Bangalore infrastructure issues",
+                "Bengaluru service gaps"
+            ],
+            "maxPosts": 100, # PeakyDev requirement
             "includeComments": False 
         }
         run = apify_client.actor("peakydev/reddit-scraper-post-comments-users").call(run_input=run_input)
         
         items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items())
         
-        # LOGGING: See exactly what we got back
+        # LOGGING: Vital for debugging
         count = len(items)
         print(f"DEBUG: Scraper returned {count} items.")
         
         if count == 0:
-            return "No specific Reddit trends found today."
+            return "No specific Reddit trends found today. Use Google Search instead."
 
-        # Collect only titles to save Gemini tokens (prevents 429 errors)
-        data = "\n".join([item.get('title', '') for item in items[:20]]) # Top 20 titles only
+        # Truncate to top 15 titles to avoid hitting Gemini's token/rate limits
+        data = "\n".join([item.get('title', '') for item in items[:15]])
         return data
 
     except Exception as e:
         print(f"Reddit Scraping failed: {e}")
-        return "Scraping failed, relying on Google Search."
+        return "Scraping failed, relying entirely on Google Search."
 
 def analyze_and_send():
-    print(f"[{datetime.now()}] Starting Hybrid Scout (Flash-Lite)...")
+    print(f"[{datetime.now()}] Starting Hybrid Scout (Gemini 1.5 Flash)...")
     try:
         reddit_data = scrape_reddit()
         
-        # We use Flash-Lite for higher free-tier stability
+        # We use Gemini 1.5 Flash for better free-tier quota stability
         prompt = f"""
-        Reddit Trends: {reddit_data}
+        Reddit Data: {reddit_data}
 
-        Task: Using Google Search, find 2 current (2026) service gaps in Bangalore. 
-        Focus on infrastructure, tech-lifestyle, or seasonal issues.
-        Suggest 2 SMB ideas. Format for WhatsApp with emojis.
+        Task: Use your built-in Google Search tool to find 2 current (2026) 
+        complaints or service gaps in Bangalore. Look for issues like:
+        - Traffic/Logistics bottlenecks
+        - Water or Power infrastructure
+        - Tech-worker burnout/lifestyle needs
+        
+        Suggest 2 high-potential SMB (Small-Medium Business) ideas.
+        Format as a professional yet catchy WhatsApp message with emojis.
         """
 
-        print("Gemini (Flash-Lite) is searching Google...")
+        print("Gemini (1.5 Flash) is searching Google and analyzing...")
         response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash-lite", # Higher quota model
+            model="gemini-1.5-flash", # More stable Free Tier quota
             contents=prompt,
             config={'tools': [{'google_search': {}}]}
         )
 
         if not response.text:
-            print("ERROR: Gemini returned an empty response.")
+            print("ERROR: Gemini returned empty text.")
             return
 
-        print("Sending WhatsApp...")
+        print("Sending WhatsApp via Twilio...")
         twilio_client.messages.create(
             from_=constants.TWILIO_WHATSAPP_FROM,
             body=f"🚀 *Bangalore Business Scout* 🚀\n\n{response.text}",
             to=constants.TWILIO_WHATSAPP_TO
         )
-        print("Success! Message sent.")
+        print("🎉 Success! Check your phone.")
 
     except Exception as e:
-        print(f"FAILED: {e}")
-        sys.exit(1)
+        print(f"CRITICAL FAILURE: {e}")
+        # Exit with 0 so Railway doesn't keep retrying and burning your quota
+        sys.exit(0) 
 
 if __name__ == "__main__":
     analyze_and_send()
