@@ -1,7 +1,7 @@
 import os
 import sys
 from datetime import datetime
-import constants # In the same src/ folder
+import constants
 
 from apify_client import ApifyClient
 from google import genai
@@ -13,80 +13,67 @@ gemini_client = genai.Client(api_key=constants.GEMINI_API_KEY)
 twilio_client = Client(constants.TWILIO_ACCOUNT_SID, constants.TWILIO_AUTH_TOKEN)
 
 def scrape_reddit():
-    print("Step 1: Scraping Reddit via PeakyDev...")
+    print("Step 1: Scraping Reddit...")
     try:
-        # Broadened queries to ensure we get more than 1 result
+        # We widened the queries significantly to ensure results > 1
         run_input = {
-            "queries": [
-                "Bangalore business problems", 
-                "Bangalore startup niche", 
-                "Bangalore infrastructure issues",
-                "Bengaluru service gaps"
-            ],
-            "maxPosts": 100, # PeakyDev requirement
-            "includeComments": False 
+            "queries": ["Bangalore", "Bengaluru", "India startup"],
+            "maxPosts": 100,
+            "includeComments": False
         }
         run = apify_client.actor("peakydev/reddit-scraper-post-comments-users").call(run_input=run_input)
-        
+
         items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items())
-        
-        # LOGGING: Vital for debugging
         count = len(items)
         print(f"DEBUG: Scraper returned {count} items.")
-        
-        if count == 0:
-            return "No specific Reddit trends found today. Use Google Search instead."
 
-        # Truncate to top 15 titles to avoid hitting Gemini's token/rate limits
-        data = "\n".join([item.get('title', '') for item in items[:15]])
-        return data
+        # Extract titles
+        data = "\n".join([item.get('title', '') for item in items[:20]])
+        return data if data else "No specific Reddit trends."
 
     except Exception as e:
         print(f"Reddit Scraping failed: {e}")
-        return "Scraping failed, relying entirely on Google Search."
+        return "Scraping failed, relying on Google Search."
 
 def analyze_and_send():
-    print(f"[{datetime.now()}] Starting Hybrid Scout (Gemini 1.5 Flash)...")
+    print(f"[{datetime.now()}] Starting Hybrid Scout...")
     try:
         reddit_data = scrape_reddit()
-        
-        # We use Gemini 1.5 Flash for better free-tier quota stability
-        prompt = f"""
-        Reddit Data: {reddit_data}
 
-        Task: Use your built-in Google Search tool to find 2 current (2026) 
-        complaints or service gaps in Bangalore. Look for issues like:
-        - Traffic/Logistics bottlenecks
-        - Water or Power infrastructure
-        - Tech-worker burnout/lifestyle needs
-        
-        Suggest 2 high-potential SMB (Small-Medium Business) ideas.
-        Format as a professional yet catchy WhatsApp message with emojis.
+        # --- FIX: In the new SDK, use 'gemini-1.5-flash' WITHOUT 'models/' prefix ---
+        model_id = "gemini-1.5-flash"
+
+        prompt = f"""
+        Reddit Context: {reddit_data}
+
+        Task: Use Google Search to find 2 current (2026) service gaps or
+        business problems in Bangalore. Suggest 2 SMB ideas.
+        Format for WhatsApp with emojis.
         """
 
-        print("Gemini (1.5 Flash) is searching Google and analyzing...")
+        print(f"Gemini ({model_id}) is searching Google...")
         response = gemini_client.models.generate_content(
-            model="gemini-1.5-flash", # More stable Free Tier quota
+            model=model_id,
             contents=prompt,
             config={'tools': [{'google_search': {}}]}
         )
 
         if not response.text:
-            print("ERROR: Gemini returned empty text.")
+            print("ERROR: Empty response from Gemini.")
             return
 
-        print("Sending WhatsApp via Twilio...")
+        print("Sending WhatsApp...")
         twilio_client.messages.create(
             from_=constants.TWILIO_WHATSAPP_FROM,
             body=f"🚀 *Bangalore Business Scout* 🚀\n\n{response.text}",
             to=constants.TWILIO_WHATSAPP_TO
         )
-        print("🎉 Success! Check your phone.")
+        print("🎉 SUCCESS! Check your phone.")
 
     except Exception as e:
+        # This will catch the 404 if the model name is still wrong
         print(f"CRITICAL FAILURE: {e}")
-        # Exit with 0 so Railway doesn't keep retrying and burning your quota
-        sys.exit(0) 
+        sys.exit(0)
 
 if __name__ == "__main__":
     analyze_and_send()
