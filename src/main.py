@@ -1,7 +1,14 @@
 import os
+import sys
 import time
 from datetime import datetime
-import constants
+
+# Assuming your constants are in a file named constants.py
+try:
+    import constants
+except ImportError:
+    print("❌ Error: constants.py not found. Please create it with your API keys.")
+    sys.exit(1)
 
 from apify_client import ApifyClient
 from google import genai
@@ -11,11 +18,17 @@ from twilio.rest import Client
 apify_client = ApifyClient(constants.APIFY_API_TOKEN)
 gemini_client = genai.Client(api_key=constants.GEMINI_API_KEY)
 
-# Twilio Check
+# Twilio Readiness Check
 TWILIO_READY = all([
     getattr(constants, 'TWILIO_ACCOUNT_SID', None),
-    getattr(constants, 'TWILIO_AUTH_TOKEN', None)
+    getattr(constants, 'TWILIO_AUTH_TOKEN', None),
+    getattr(constants, 'TWILIO_WHATSAPP_FROM', None),
+    getattr(constants, 'TWILIO_WHATSAPP_TO', None)
 ])
+
+# Environment Flag for Push (Default to False)
+# To enable, set ENV variable: ENABLE_TWILIO_PUSH=True
+PUSH_ENABLED = os.getenv("ENABLE_TWILIO_PUSH", "False").lower() == "true"
 
 class MasterScout:
     def __init__(self):
@@ -38,7 +51,7 @@ class MasterScout:
             try:
                 run_input = {
                     "searchTerm": self.primary_query,
-                    "maxPosts": 100,  # Actor requires minimum 100
+                    "maxPosts": 100,
                     "searchTime": tf,
                     "searchSort": "relevance",
                     "scrapeType": "post"
@@ -70,7 +83,7 @@ class MasterScout:
             tweets = "\n".join([f"{r.get('title')}: {r.get('snippet')}" for r in results])
             self.all_raw_data.append(f"[TWITTER DATA]: {tweets}")
         except Exception as e:
-            print(f"❌ Twitter Workaround Error: {e}")
+            print(f"❌ Twitter Search Error: {e}")
 
     def scrape_google_search(self):
         print("\nStep 3: Google Web Scrape")
@@ -101,9 +114,13 @@ class MasterScout:
         {context}
 
         TASK:
-        1. Identify 3 business gaps in Bangalore for 2026 based on data.
-        2. Propose SMB ideas with 24h start steps.
-        Format for WhatsApp.
+        1. Identify 3 critical business gaps in Bangalore for 2026 based on the scraped data.
+        2. Propose 3 specific SMB ideas including:
+           - 📊 Success Probability (%)
+           - 🏗️ Difficulty (1-10)
+           - 🚀 24h Quick Start Step
+        
+        Format for WhatsApp with bolding and emojis. Keep it concise.
         """
         try:
             response = gemini_client.models.generate_content(
@@ -113,31 +130,44 @@ class MasterScout:
             )
             return response.text
         except Exception as e:
-            return f"Gemini Error: {e}"
+            return f"Gemini Analysis Error: {e}"
 
 def main():
     scout = MasterScout()
+    
+    # Run the Pipeline
     scout.scrape_reddit()
     scout.scrape_twitter_via_google()
     scout.scrape_google_search()
     
+    # Generate the Analysis
     report = scout.analyze_report()
     final_output = f"🚀 *Master Scout: Bangalore 2026* 🚀\n\n{report}"
     
-    print("\n--- FINAL MASTER REPORT ---")
+    # 1. Always Print to Terminal
+    print("\n" + "="*40)
+    print("FINAL MASTER REPORT")
+    print("="*40)
     print(final_output)
+    print("="*40)
 
-    if TWILIO_READY:
-        try:
-            client = Client(constants.TWILIO_ACCOUNT_SID, constants.TWILIO_AUTH_TOKEN)
-            client.messages.create(
-                from_=constants.TWILIO_WHATSAPP_FROM,
-                body=final_output,
-                to=constants.TWILIO_WHATSAPP_TO
-            )
-            print("\n✅ WhatsApp Delivered!")
-        except Exception as e:
-            print(f"\n❌ Twilio delivery failed: {e}")
+    # 2. Conditional Push to WhatsApp
+    if PUSH_ENABLED:
+        if TWILIO_READY:
+            try:
+                client = Client(constants.TWILIO_ACCOUNT_SID, constants.TWILIO_AUTH_TOKEN)
+                client.messages.create(
+                    from_=constants.TWILIO_WHATSAPP_FROM,
+                    body=final_output,
+                    to=constants.TWILIO_WHATSAPP_TO
+                )
+                print("\n✅ WhatsApp Push Delivered!")
+            except Exception as e:
+                print(f"\n❌ Twilio Push Failed: {e}")
+        else:
+            print("\n⚠️ Push enabled via ENV but constants.py is missing Twilio credentials.")
+    else:
+        print("\nℹ️ Twilio Push disabled (set ENABLE_TWILIO_PUSH=True to enable).")
 
 if __name__ == "__main__":
     main()
