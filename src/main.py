@@ -84,4 +84,84 @@ class MasterScout:
             print(f"❌ Twitter Search Error: {e}")
 
     def scrape_google_search(self):
-        print("\nStep 3: Google Web
+        print("\nStep 3: Google Web Scrape")
+        try:
+            run_input = {
+                "queries": self.primary_query,
+                "maxPagesPerQuery": 1,
+                "resultsPerPage": 10
+            }
+            run = apify_client.actor("apify/google-search-scraper").call(run_input=run_input)
+            items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items())
+            organic = []
+            for page in items:
+                organic.extend(page.get('organicResults', []))
+            
+            self.log_step("Google Web", organic)
+            snippets = "\n".join([f"{res.get('title')}: {res.get('snippet')}" for res in organic])
+            self.all_raw_data.append(f"[WEB SEARCH]: {snippets}")
+        except Exception as e:
+            print(f"❌ Google Search Error: {e}")
+
+    def analyze_report(self):
+        print("\nStep 4: Gemini Analysis")
+        context = "\n\n".join([d for d in self.all_raw_data if len(d) > 10])
+        
+        if not context:
+            return "⚠️ No data collected from scrapers."
+
+        prompt = f"""
+        CONTEXT:
+        {context}
+
+        TASK:
+        1. Identify 3 specific business gaps in Bangalore for 2026 based on data.
+        2. Propose 3 SMB ideas. 
+        
+        STRICT LIMIT: Keep response under 1200 characters.
+        Use bullet points, emojis, and include a '24h Quick Start' for each.
+        """
+        try:
+            response = gemini_client.models.generate_content(
+                model="gemini-2.5-flash", 
+                contents=prompt,
+                config={'tools': [{'google_search': {}}]}
+            )
+            return response.text
+        except Exception as e:
+            return f"Gemini Error: {e}"
+
+def main():
+    print(f"--- Master Scout Startup Sequence ---")
+    print(f"DEBUG: PUSH_ENABLED is {PUSH_ENABLED}")
+    
+    scout = MasterScout()
+    scout.scrape_reddit()
+    scout.scrape_twitter_via_google()
+    scout.scrape_google_search()
+    
+    report = scout.analyze_report()
+    
+    # 1,600 Character Safety Guard for WhatsApp
+    header = "🚀 *Master Scout: Bangalore 2026* 🚀\n\n"
+    final_output = (header + report)[:1595]
+    
+    print("\n--- REPORT PREVIEW ---")
+    print(final_output)
+
+    if PUSH_ENABLED and TWILIO_READY:
+        try:
+            client = Client(constants.TWILIO_ACCOUNT_SID, constants.TWILIO_AUTH_TOKEN)
+            client.messages.create(
+                from_=constants.TWILIO_WHATSAPP_FROM,
+                body=final_output,
+                to=constants.TWILIO_WHATSAPP_TO
+            )
+            print("\n✅ WhatsApp Delivered successfully!")
+        except Exception as e:
+            print(f"\n❌ Twilio Push Failed: {e}")
+    else:
+        print("\nℹ️ WhatsApp Push skipped (Check Variables/Constants)")
+
+if __name__ == "__main__":
+    main()
