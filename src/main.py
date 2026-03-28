@@ -12,71 +12,101 @@ from twilio.rest import Client
 apify_client = ApifyClient(constants.APIFY_API_TOKEN)
 gemini_client = genai.Client(api_key=constants.GEMINI_API_KEY)
 
-class ScoutEngine:
-    def __init__(self):
-        self.queries = ["Bangalore startup gaps", "Bengaluru business problems 2026", "Bangalore power cuts"]
-        self.combined_context = []
+# Twilio Check
+TWILIO_READY = all([
+    getattr(constants, 'TWILIO_ACCOUNT_SID', None),
+    getattr(constants, 'TWILIO_AUTH_TOKEN', None)
+])
 
-    def scrape_reddit_multi(self):
-        # Timeframes requested: 24h, 1 week, 1 month
-        timeframes = ["day", "week", "month"]
-        print(f"--- Step 1: Multi-Timeline Reddit Scrape ({len(timeframes)} runs) ---")
+class MasterScout:
+    def __init__(self):
+        # Broadening queries for better hit rates across platforms
+        self.queries = ["Bangalore startup gaps", "Bengaluru business problems 2026", "Bangalore infrastructure issues"]
+        self.all_raw_data = []
+
+    def log_platform_results(self, platform, items):
+        """Helper to print exactly what we found before moving on."""
+        count = len(items)
+        print(f"\n{'='*10} {platform.upper()} DATA {'='*10}")
+        print(f"Total Results: {count}")
         
+        if count > 0:
+            for idx, item in enumerate(items[:5]): # Show first 5 as a sample
+                text = item.get('title') or item.get('full_text') or item.get('text') or item.get('caption', 'No Text')
+                print(f"{idx+1}. {text[:100]}...")
+        else:
+            print("⚠️ No data found for this platform/timeframe.")
+        print(f"{'='*30}\n")
+
+    def scrape_reddit(self):
+        print("--- Step 1: Reddit Multi-Timeline Scrape ---")
+        timeframes = ["day", "week", "month"]
         for tf in timeframes:
             try:
-                print(f"Scraping Reddit [{tf}]...")
                 run_input = {
                     "queries": self.queries,
-                    "maxPosts": 100, 
+                    "maxPosts": 50, 
                     "searchTime": tf,
-                    "searchSort": "new" if tf == "day" else "relevance"
+                    "searchSort": "relevance"
                 }
                 run = apify_client.actor("peakydev/reddit-scraper-post-comments-users").call(run_input=run_input)
-                items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items(limit=30))
-                titles = [item.get('title', '') for item in items]
-                self.combined_context.append(f"--- REDDIT DATA ({tf}) ---\n" + "\n".join(titles))
+                items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items(limit=20))
+                
+                self.log_platform_results(f"Reddit ({tf})", items)
+                
+                titles = "\n".join([i.get('title', '') for i in items])
+                self.all_raw_data.append(f"[REDDIT {tf.upper()}]:\n{titles}")
             except Exception as e:
-                print(f"Reddit [{tf}] failed: {e}")
+                print(f"❌ Reddit {tf} Error: {e}")
 
-    def scrape_twitter_free(self):
-        print("--- Step 2: Scraping Twitter (coder_luffy/free-tweet-scraper) ---")
+    def scrape_twitter_iron(self):
+        print("--- Step 2: Twitter Scrape (IronCrawler) ---")
         try:
-            run_input = {"search_queries": self.queries, "max_tweets": 50}
-            run = apify_client.actor("coder_luffy/free-tweet-scraper").call(run_input=run_input)
-            items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items(limit=30))
-            tweets = [item.get('full_text', '') for item in items]
-            self.combined_context.append("--- TWITTER DATA ---\n" + "\n".join(tweets))
+            # Using iron-crawler/twitter-search
+            run_input = {
+                "searchTerms": ["Bangalore gaps", "Bengaluru 2026 business"],
+                "maxTweets": 20
+            }
+            run = apify_client.actor("iron-crawler/twitter-search").call(run_input=run_input)
+            items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items(limit=20))
+            
+            self.log_platform_results("Twitter (Iron)", items)
+            
+            tweets = "\n".join([i.get('full_text', i.get('text', '')) for i in items])
+            self.all_raw_data.append(f"[TWITTER]:\n{tweets}")
         except Exception as e:
-            print(f"Twitter scrape failed: {e}")
+            print(f"❌ Twitter Error: {e}")
 
     def scrape_instagram_free(self):
-        print("--- Step 3: Scraping Instagram (scrapesmith/instagram-free-post-scraper) ---")
+        print("--- Step 3: Instagram Scrape (ScrapeSmith) ---")
         try:
-            # Instagram often works better with single hashtags for these free actors
-            run_input = {"hashtags": ["bangalorebusiness", "bengaluruinteriors"], "resultsLimit": 20}
+            run_input = {"hashtags": ["bangalorebusiness", "bengaluru2026"], "resultsLimit": 10}
             run = apify_client.actor("scrapesmith/instagram-free-post-scraper").call(run_input=run_input)
-            items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items())
-            captions = [item.get('caption', '') for item in items]
-            self.combined_context.append("--- INSTAGRAM DATA ---\n" + "\n".join(captions))
+            items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items(limit=10))
+            
+            self.log_platform_results("Instagram", items)
+            
+            captions = "\n".join([i.get('caption', '') for i in items if i.get('caption')])
+            self.all_raw_data.append(f"[INSTAGRAM]:\n{captions}")
         except Exception as e:
-            print(f"Instagram scrape failed: {e}")
+            print(f"❌ Instagram Error: {e}")
 
-    def analyze_with_factors(self):
-        full_context = "\n\n".join(self.combined_context)
-        print(f"--- Final Step: Analyzing with Gemini 2.5 ({len(full_context)} chars) ---")
+    def analyze_and_ground(self):
+        print("\n--- Step 4: Google Grounding & Gemini Analysis ---")
+        full_context = "\n\n".join(self.all_raw_data)
         
         prompt = f"""
-        Platform Data Context:
+        SOCIAL MEDIA CONTEXT (Reddit 24h/1w/1m, Twitter, Instagram):
         {full_context}
 
-        Task: Analyze the gaps across Reddit, Twitter, and Instagram for Bangalore in 2026.
-        Provide 3 detailed SMB ideas. For each idea, include:
-        1. 💡 Idea Name & Concept
-        2. 📊 Success Probability Percentage (based on sentiment volume)
-        3. 🏗️ Implementation Difficulty (1-10)
-        4. 💰 Capital Requirement (Low/Medium/High)
-        5. ⏱️ Time-to-Revenue (Weeks)
-        6. 🚀 Quick-Start Execution Step
+        TASK:
+        1. Use Google Search to verify these gaps against March 2026 news and data for Bangalore.
+        2. Propose 3 SMB ideas. For each, include:
+           - 📊 Success Probability (%)
+           - 🏗️ Difficulty (1-10)
+           - 💰 Capital (Low/Med/High)
+           - ⏱️ Time-to-Revenue (Weeks)
+           - 🚀 24h Quick Start Action
         
         Format for WhatsApp with bold headers and emojis.
         """
@@ -89,20 +119,40 @@ class ScoutEngine:
             )
             return response.text
         except Exception as e:
-            return f"Analysis failed: {e}"
+            return f"Analysis Error: {e}"
 
-def run_scout():
-    scout = ScoutEngine()
-    scout.scrape_reddit_multi()
-    scout.scrape_twitter_free()
+def main():
+    scout = MasterScout()
+    
+    # Run Scrapers
+    scout.scrape_reddit()
+    scout.scrape_twitter_iron()
     scout.scrape_instagram_free()
     
-    result = scout.analyze_with_factors()
+    # Run AI Analysis
+    report = scout.analyze_and_ground()
     
-    print("\n" + "="*50)
-    print("🚀 HYBRID SCOUT MASTER REPORT 🚀")
-    print("="*50 + "\n")
-    print(result)
+    # Final Output Delivery
+    final_report = f"🌟 *BANGALORE HYBRID SCOUT REPORT* 🌟\n\n{report}"
+    
+    print("\n" + "="*40)
+    print("FINAL REPORT PREVIEW")
+    print("="*40)
+    print(final_report)
+
+    if TWILIO_READY:
+        try:
+            client = Client(constants.TWILIO_ACCOUNT_SID, constants.TWILIO_AUTH_TOKEN)
+            client.messages.create(
+                from_=constants.TWILIO_WHATSAPP_FROM,
+                body=final_report,
+                to=constants.TWILIO_WHATSAPP_TO
+            )
+            print("\n✅ Sent to WhatsApp successfully!")
+        except Exception as e:
+            print(f"\n❌ Twilio delivery failed: {e}")
+    else:
+        print("\n📢 Twilio keys missing. Result displayed in terminal only.")
 
 if __name__ == "__main__":
-    run_scout()
+    main()
