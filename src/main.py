@@ -1,6 +1,6 @@
 import os
 import sys
-import time  # Added for the buffer
+import time
 from datetime import datetime
 import constants
 
@@ -12,104 +12,97 @@ from twilio.rest import Client
 apify_client = ApifyClient(constants.APIFY_API_TOKEN)
 gemini_client = genai.Client(api_key=constants.GEMINI_API_KEY)
 
-# Handle Twilio gracefully
-try:
-    if hasattr(constants, 'TWILIO_ACCOUNT_SID') and constants.TWILIO_ACCOUNT_SID:
-        twilio_client = Client(constants.TWILIO_ACCOUNT_SID, constants.TWILIO_AUTH_TOKEN)
-        TWILIO_READY = True
-    else:
-        TWILIO_READY = False
-except Exception:
-    TWILIO_READY = False
+class ScoutEngine:
+    def __init__(self):
+        self.queries = ["Bangalore startup gaps", "Bengaluru business problems 2026", "Bangalore power cuts"]
+        self.combined_context = []
 
-def scrape_reddit():
-    print("Step 1: Scraping Reddit (Past 24 Hours)...")
-    try:
-        run_input = {
-            "queries": ["Bangalore startup gaps", "Bengaluru business problems 2026", "Bangalore community help"],
-            "maxPosts": 200, 
-            "searchTime": "day",
-            "searchSort": "new",
-            "includeComments": False
-        }
+    def scrape_reddit_multi(self):
+        # Timeframes requested: 24h, 1 week, 1 month
+        timeframes = ["day", "week", "month"]
+        print(f"--- Step 1: Multi-Timeline Reddit Scrape ({len(timeframes)} runs) ---")
         
-        # .call() waits for the actor to finish, but we add a timeout for safety
-        print("Waiting for Apify actor to complete...")
-        run = apify_client.actor("peakydev/reddit-scraper-post-comments-users").call(
-            run_input=run_input,
-            wait_for_finish=180 # Wait up to 3 minutes
-        )
-        
-        # A small 2-second buffer to ensure the Apify database is ready for reading
-        time.sleep(2)
-        
-        # Fetch up to 50 items
-        dataset_id = run["defaultDatasetId"]
-        items = list(apify_client.dataset(dataset_id).iterate_items(limit=50))
-        
-        print(f"DEBUG: Scraper retrieved {len(items)} fresh items.")
-        
-        if not items:
-            return "No new Reddit trends in the last 24 hours."
-            
-        return "\n".join([item.get('title', 'No Title') for item in items])
+        for tf in timeframes:
+            try:
+                print(f"Scraping Reddit [{tf}]...")
+                run_input = {
+                    "queries": self.queries,
+                    "maxPosts": 100, 
+                    "searchTime": tf,
+                    "searchSort": "new" if tf == "day" else "relevance"
+                }
+                run = apify_client.actor("peakydev/reddit-scraper-post-comments-users").call(run_input=run_input)
+                items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items(limit=30))
+                titles = [item.get('title', '') for item in items]
+                self.combined_context.append(f"--- REDDIT DATA ({tf}) ---\n" + "\n".join(titles))
+            except Exception as e:
+                print(f"Reddit [{tf}] failed: {e}")
 
-    except Exception as e:
-        print(f"⚠️ Reddit Scraping failed: {e}")
-        return "Scraping failed, relying on Google Search grounding."
-
-def analyze_and_send():
-    print(f"[{datetime.now()}] Starting Hybrid Scout...")
-    
-    # 1. Get Data
-    reddit_data = scrape_reddit()
-
-    # 2. Process with Gemini 2.5
-    model_id = "gemini-2.5-flash"
-    prompt = f"""
-    Reddit Context (Last 24 Hours): 
-    {reddit_data}
-
-    Task: 
-    1. Cross-reference these fresh Reddit complaints with live 2026 data via Google Search.
-    2. Identify 2 high-potential SMB gaps specifically for Bangalore.
-    3. Suggest actionable business ideas with a focus on quick execution.
-    4. Format for WhatsApp with bold headers and professional emojis.
-    """
-
-    print(f"Step 2: Gemini ({model_id}) is searching Google for real-time verification...")
-    try:
-        response = gemini_client.models.generate_content(
-            model=model_id,
-            contents=prompt,
-            config={'tools': [{'google_search': {}}]}
-        )
-        
-        final_output = response.text if response.text else "Failed to generate insights."
-    except Exception as e:
-        print(f"CRITICAL FAILURE in Gemini: {e}")
-        return
-
-    # 3. Deliver Result
-    full_message = f"🚀 *Bangalore 24h Business Scout* 🚀\n\n{final_output}"
-
-    if TWILIO_READY:
-        print("Step 3: Sending WhatsApp...")
+    def scrape_twitter_free(self):
+        print("--- Step 2: Scraping Twitter (coder_luffy/free-tweet-scraper) ---")
         try:
-            twilio_client.messages.create(
-                from_=constants.TWILIO_WHATSAPP_FROM, 
-                body=full_message,
-                to=constants.TWILIO_WHATSAPP_TO
-            )
-            print("🎉 SUCCESS! Check your WhatsApp.")
+            run_input = {"search_queries": self.queries, "max_tweets": 50}
+            run = apify_client.actor("coder_luffy/free-tweet-scraper").call(run_input=run_input)
+            items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items(limit=30))
+            tweets = [item.get('full_text', '') for item in items]
+            self.combined_context.append("--- TWITTER DATA ---\n" + "\n".join(tweets))
         except Exception as e:
-            print(f"❌ Twilio delivery failed: {e}")
-            print(f"\n--- FALLBACK (Terminal Output) ---\n{full_message}")
-    else:
-        print("\n📢 TWILIO PENDING: Results printed to terminal:")
-        print("-" * 40)
-        print(full_message)
-        print("-" * 40)
+            print(f"Twitter scrape failed: {e}")
+
+    def scrape_instagram_free(self):
+        print("--- Step 3: Scraping Instagram (scrapesmith/instagram-free-post-scraper) ---")
+        try:
+            # Instagram often works better with single hashtags for these free actors
+            run_input = {"hashtags": ["bangalorebusiness", "bengaluruinteriors"], "resultsLimit": 20}
+            run = apify_client.actor("scrapesmith/instagram-free-post-scraper").call(run_input=run_input)
+            items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items())
+            captions = [item.get('caption', '') for item in items]
+            self.combined_context.append("--- INSTAGRAM DATA ---\n" + "\n".join(captions))
+        except Exception as e:
+            print(f"Instagram scrape failed: {e}")
+
+    def analyze_with_factors(self):
+        full_context = "\n\n".join(self.combined_context)
+        print(f"--- Final Step: Analyzing with Gemini 2.5 ({len(full_context)} chars) ---")
+        
+        prompt = f"""
+        Platform Data Context:
+        {full_context}
+
+        Task: Analyze the gaps across Reddit, Twitter, and Instagram for Bangalore in 2026.
+        Provide 3 detailed SMB ideas. For each idea, include:
+        1. 💡 Idea Name & Concept
+        2. 📊 Success Probability Percentage (based on sentiment volume)
+        3. 🏗️ Implementation Difficulty (1-10)
+        4. 💰 Capital Requirement (Low/Medium/High)
+        5. ⏱️ Time-to-Revenue (Weeks)
+        6. 🚀 Quick-Start Execution Step
+        
+        Format for WhatsApp with bold headers and emojis.
+        """
+
+        try:
+            response = gemini_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config={'tools': [{'google_search': {}}]}
+            )
+            return response.text
+        except Exception as e:
+            return f"Analysis failed: {e}"
+
+def run_scout():
+    scout = ScoutEngine()
+    scout.scrape_reddit_multi()
+    scout.scrape_twitter_free()
+    scout.scrape_instagram_free()
+    
+    result = scout.analyze_with_factors()
+    
+    print("\n" + "="*50)
+    print("🚀 HYBRID SCOUT MASTER REPORT 🚀")
+    print("="*50 + "\n")
+    print(result)
 
 if __name__ == "__main__":
-    analyze_and_send()
+    run_scout()
