@@ -28,7 +28,7 @@ TWILIO_READY = all([
 
 # Environment Flag for Push (Default to False)
 # To enable, set ENV variable: ENABLE_TWILIO_PUSH=True
-PUSH_ENABLED = os.getenv("ENABLE_TWILIO_PUSH", "False").lower() == "true"
+PUSH_ENABLED = os.getenv("ENABLE_TWILIO_PUSH", "True").lower() == "true"
 
 class MasterScout:
     def __init__(self):
