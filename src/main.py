@@ -9,9 +9,9 @@ from twilio.rest import Client
 
 # Initialize Clients
 apify_client = ApifyClient(constants.APIFY_API_TOKEN)
-# Note: Ensure you have linked a billing account in AI Studio to fix the 'limit: 0' error
 gemini_client = genai.Client(api_key=constants.GEMINI_API_KEY)
 
+# Twilio Check
 TWILIO_READY = all([
     getattr(constants, 'TWILIO_ACCOUNT_SID', None),
     getattr(constants, 'TWILIO_AUTH_TOKEN', None)
@@ -38,7 +38,7 @@ class MasterScout:
             try:
                 run_input = {
                     "searchTerm": self.primary_query,
-                    "maxPosts": 100,  # FIXED: Minimum requirement is 100
+                    "maxPosts": 100,  # Actor requires minimum 100
                     "searchTime": tf,
                     "searchSort": "relevance",
                     "scrapeType": "post"
@@ -53,10 +53,8 @@ class MasterScout:
                 print(f"❌ Reddit Error: {e}")
 
     def scrape_twitter_via_google(self):
-        """Workaround: Uses Google Search to find Twitter content on Free Plan"""
-        print("\nStep 2: Twitter Search (via Google Scraper)")
+        print("\nStep 2: Twitter Search (via Google)")
         try:
-            # We search for Twitter-specific results to bypass Tweet-Scraper API restrictions
             run_input = {
                 "queries": f"site:x.com {self.primary_query}",
                 "maxPagesPerQuery": 1,
@@ -64,19 +62,18 @@ class MasterScout:
             }
             run = apify_client.actor("apify/google-search-scraper").call(run_input=run_input)
             items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items())
-            
             results = []
             for page in items:
                 results.extend(page.get('organicResults', []))
             
             self.log_step("Twitter (via Google)", results)
             tweets = "\n".join([f"{r.get('title')}: {r.get('snippet')}" for r in results])
-            self.all_raw_data.append(f"[TWITTER/X DATA]: {tweets}")
+            self.all_raw_data.append(f"[TWITTER DATA]: {tweets}")
         except Exception as e:
             print(f"❌ Twitter Workaround Error: {e}")
 
     def scrape_google_search(self):
-        print("\nStep 3: Google News/Web Scrape")
+        print("\nStep 3: Google Web Scrape")
         try:
             run_input = {
                 "queries": self.primary_query,
@@ -85,7 +82,6 @@ class MasterScout:
             }
             run = apify_client.actor("apify/google-search-scraper").call(run_input=run_input)
             items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items())
-            
             organic = []
             for page in items:
                 organic.extend(page.get('organicResults', []))
@@ -101,28 +97,23 @@ class MasterScout:
         context = "\n\n".join(self.all_raw_data)
         
         prompt = f"""
-        DATA CONTEXT:
+        CONTEXT:
         {context}
 
         TASK:
-        1. Identify 3 underserved business gaps in Bangalore based on this data.
-        2. Propose SMB ideas with these metrics:
-           - Success Probability (%)
-           - Difficulty (1-10)
-           - 24h Quick Start Step
-        
-        Format for WhatsApp with bolding and emojis.
+        1. Identify 3 business gaps in Bangalore for 2026 based on data.
+        2. Propose SMB ideas with 24h start steps.
+        Format for WhatsApp.
         """
         try:
-            # Using 2.0-flash as requested
             response = gemini_client.models.generate_content(
-                model="gemini-2.0-flash", 
+                model="gemini-2.5-flash", 
                 contents=prompt,
                 config={'tools': [{'google_search': {}}]}
             )
             return response.text
         except Exception as e:
-            return f"Gemini Error: {e}\nTIP: Link a billing account in AI Studio to activate Free Tier quotas."
+            return f"Gemini Error: {e}"
 
 def main():
     scout = MasterScout()
@@ -145,4 +136,8 @@ def main():
                 to=constants.TWILIO_WHATSAPP_TO
             )
             print("\n✅ WhatsApp Delivered!")
-        except Exception
+        except Exception as e:
+            print(f"\n❌ Twilio delivery failed: {e}")
+
+if __name__ == "__main__":
+    main()
