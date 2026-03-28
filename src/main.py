@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 from datetime import datetime
 import constants
@@ -10,9 +9,9 @@ from twilio.rest import Client
 
 # Initialize Clients
 apify_client = ApifyClient(constants.APIFY_API_TOKEN)
+# Note: Ensure you have linked a billing account in AI Studio to fix the 'limit: 0' error
 gemini_client = genai.Client(api_key=constants.GEMINI_API_KEY)
 
-# Twilio Check
 TWILIO_READY = all([
     getattr(constants, 'TWILIO_ACCOUNT_SID', None),
     getattr(constants, 'TWILIO_AUTH_TOKEN', None)
@@ -24,27 +23,22 @@ class MasterScout:
         self.all_raw_data = []
 
     def log_step(self, platform, items):
-        """Prints exact results to the terminal for manual verification."""
         count = len(items)
         print(f"\n--- {platform} Results ---")
         print(f"Items found: {count}")
         if count > 0:
             for i, item in enumerate(items[:3]):
-                # Updated logic to handle different platform schemas
-                text = item.get('title') or item.get('fullText') or item.get('snippet') or "No text content"
+                text = item.get('title') or item.get('snippet') or item.get('description') or "No text content"
                 print(f"  {i+1}. {text[:100]}...")
-        else:
-            print("  ⚠️ No data found. Check query or actor status.")
         print("-" * 30)
 
     def scrape_reddit(self):
         print("\nStep 1: Reddit Multi-Timeline Scrape")
-        timeframes = ["day", "week", "month"]
-        for tf in timeframes:
+        for tf in ["day", "week", "month"]:
             try:
                 run_input = {
                     "searchTerm": self.primary_query,
-                    "maxPosts": 50, 
+                    "maxPosts": 100,  # FIXED: Minimum requirement is 100
                     "searchTime": tf,
                     "searchSort": "relevance",
                     "scrapeType": "post"
@@ -56,92 +50,87 @@ class MasterScout:
                 titles = "\n".join([i.get('title', '') for i in items])
                 self.all_raw_data.append(f"[REDDIT {tf.upper()}]: {titles}")
             except Exception as e:
-                print(f"❌ Reddit {tf} Error: {e}")
+                print(f"❌ Reddit Error: {e}")
 
-    def scrape_twitter_apidojo(self):
-        print("\nStep 2: Twitter Scrape (ApiDojo)")
+    def scrape_twitter_via_google(self):
+        """Workaround: Uses Google Search to find Twitter content on Free Plan"""
+        print("\nStep 2: Twitter Search (via Google Scraper)")
         try:
-            # apidojo/tweet-scraper schema
+            # We search for Twitter-specific results to bypass Tweet-Scraper API restrictions
             run_input = {
-                "searchTerms": [self.primary_query],
-                "sort": "Latest",
-                "maxTweets": 20,
+                "queries": f"site:x.com {self.primary_query}",
+                "maxPagesPerQuery": 1,
+                "resultsPerPage": 15
             }
-            run = apify_client.actor("apidojo/tweet-scraper").call(run_input=run_input)
-            items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items(limit=20))
-            self.log_step("Twitter", items)
+            run = apify_client.actor("apify/google-search-scraper").call(run_input=run_input)
+            items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items())
             
-            tweets = "\n".join([i.get('fullText', '') for i in items if i.get('fullText')])
-            self.all_raw_data.append(f"[TWITTER]: {tweets}")
+            results = []
+            for page in items:
+                results.extend(page.get('organicResults', []))
+            
+            self.log_step("Twitter (via Google)", results)
+            tweets = "\n".join([f"{r.get('title')}: {r.get('snippet')}" for r in results])
+            self.all_raw_data.append(f"[TWITTER/X DATA]: {tweets}")
         except Exception as e:
-            print(f"❌ Twitter Error: {e}")
+            print(f"❌ Twitter Workaround Error: {e}")
 
     def scrape_google_search(self):
-        print("\nStep 3: Google Search Scrape (Apify)")
+        print("\nStep 3: Google News/Web Scrape")
         try:
-            # apify/google-search-scraper schema
             run_input = {
                 "queries": self.primary_query,
                 "maxPagesPerQuery": 1,
-                "resultsPerPage": 10,
-                "mobileResults": False
+                "resultsPerPage": 10
             }
             run = apify_client.actor("apify/google-search-scraper").call(run_input=run_input)
-            items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items(limit=10))
+            items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items())
             
-            # Extract organic results from the Google schema
-            organic_results = []
+            organic = []
             for page in items:
-                organic_results.extend(page.get('organicResults', []))
+                organic.extend(page.get('organicResults', []))
             
-            self.log_step("Google Search", organic_results)
-            
-            snippets = "\n".join([f"{res.get('title')}: {res.get('snippet')}" for res in organic_results])
-            self.all_raw_data.append(f"[GOOGLE SEARCH]: {snippets}")
+            self.log_step("Google Web", organic)
+            snippets = "\n".join([f"{res.get('title')}: {res.get('snippet')}" for res in organic])
+            self.all_raw_data.append(f"[WEB SEARCH]: {snippets}")
         except Exception as e:
             print(f"❌ Google Search Error: {e}")
 
     def analyze_report(self):
-        print("\nStep 4: Google Grounding & Gemini Analysis")
+        print("\nStep 4: Gemini Analysis")
         context = "\n\n".join(self.all_raw_data)
         
         prompt = f"""
-        SOCIAL & SEARCH DATA CONTEXT:
+        DATA CONTEXT:
         {context}
 
         TASK:
-        1. Use Google Search to verify these insights against current March 2026 Bangalore news and trends.
-        2. Propose 3 specific SMB business ideas tailored for the Bangalore market.
-        
-        INCLUDE FOR EACH IDEA:
-        - 📊 Success Probability (%)
-        - 🏗️ Difficulty (1-10)
-        - 💰 Capital (Low/Med/High)
-        - ⏱️ Time-to-Revenue (Weeks)
-        - 🚀 24h Quick Start Step
+        1. Identify 3 underserved business gaps in Bangalore based on this data.
+        2. Propose SMB ideas with these metrics:
+           - Success Probability (%)
+           - Difficulty (1-10)
+           - 24h Quick Start Step
         
         Format for WhatsApp with bolding and emojis.
         """
         try:
-            # Note: Ensure constants.GEMINI_API_KEY supports the model version used
+            # Using 2.0-flash as requested
             response = gemini_client.models.generate_content(
-                model="gemini-2.0-flash", # Adjusted to current available flash model
+                model="gemini-2.0-flash", 
                 contents=prompt,
                 config={'tools': [{'google_search': {}}]}
             )
             return response.text
         except Exception as e:
-            return f"Analysis Error: {e}"
+            return f"Gemini Error: {e}\nTIP: Link a billing account in AI Studio to activate Free Tier quotas."
 
 def main():
     scout = MasterScout()
-    
     scout.scrape_reddit()
-    scout.scrape_twitter_apidojo()
+    scout.scrape_twitter_via_google()
     scout.scrape_google_search()
     
     report = scout.analyze_report()
-    
     final_output = f"🚀 *Master Scout: Bangalore 2026* 🚀\n\n{report}"
     
     print("\n--- FINAL MASTER REPORT ---")
@@ -156,8 +145,4 @@ def main():
                 to=constants.TWILIO_WHATSAPP_TO
             )
             print("\n✅ WhatsApp Delivered!")
-        except Exception as e:
-            print(f"\n❌ Twilio delivery failed: {e}")
-
-if __name__ == "__main__":
-    main()
+        except Exception
