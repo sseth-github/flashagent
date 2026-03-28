@@ -20,58 +20,58 @@ TWILIO_READY = all([
 
 class MasterScout:
     def __init__(self):
-        # Refined keywords for Bangalore 2026 focus
-        self.search_keywords = ["Bangalore startup gaps 2026", "Bengaluru infrastructure problems", "Bangalore SME opportunities"]
+        # We use single primary terms to avoid multi-query schema errors
+        self.primary_query = "Bangalore startup business gaps 2026"
         self.all_raw_data = []
 
-    def log_results(self, platform, items):
+    def log_step(self, platform, items):
+        """Prints exact results to the terminal for manual verification."""
         count = len(items)
         print(f"\n--- {platform} Results ---")
         print(f"Items found: {count}")
         if count > 0:
-            # Show snippet of the first few items
             for i, item in enumerate(items[:3]):
-                text = item.get('title') or item.get('full_text') or item.get('caption') or "No text"
-                print(f"  {i+1}. {text[:80]}...")
+                # Dynamically find text content based on platform schema
+                text = item.get('title') or item.get('full_text') or item.get('caption') or "No text content"
+                print(f"  {i+1}. {text[:100]}...")
         else:
-            print("  ⚠️ No data found.")
+            print("  ⚠️ No data found. Check query or actor status.")
         print("-" * 30)
 
     def scrape_reddit(self):
-        timeframes = ["day", "week", "month"]
         print("\nStep 1: Reddit Multi-Timeline Scrape")
+        timeframes = ["day", "week", "month"]
         for tf in timeframes:
             try:
-                # FIX: 'peakydev' actor uses 'searchTerm' (string), not 'queries' (list)
-                for query in self.search_keywords[:1]: # Using primary query for speed
-                    run_input = {
-                        "searchTerm": query,
-                        "maxPosts": 100, 
-                        "searchTime": tf,
-                        "searchSort": "relevance",
-                        "scrapeType": "post"
-                    }
-                    run = apify_client.actor("peakydev/reddit-scraper-post-comments-users").call(run_input=run_input)
-                    items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items(limit=20))
-                    self.log_results(f"Reddit ({tf})", items)
-                    
-                    titles = "\n".join([i.get('title', '') for i in items])
-                    self.all_raw_data.append(f"[REDDIT {tf.upper()}]: {titles}")
+                # SCHEMA FIX: Use 'searchTerm' (string)
+                run_input = {
+                    "searchTerm": self.primary_query,
+                    "maxPosts": 100, 
+                    "searchTime": tf,
+                    "searchSort": "relevance",
+                    "scrapeType": "post"
+                }
+                run = apify_client.actor("peakydev/reddit-scraper-post-comments-users").call(run_input=run_input)
+                items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items(limit=20))
+                self.log_step(f"Reddit ({tf})", items)
+                
+                titles = "\n".join([i.get('title', '') for i in items])
+                self.all_raw_data.append(f"[REDDIT {tf.upper()}]: {titles}")
             except Exception as e:
                 print(f"❌ Reddit {tf} Error: {e}")
 
     def scrape_twitter_iron(self):
         print("\nStep 2: Twitter Scrape (IronCrawler)")
         try:
-            # FIX: searchTerms is a list for this actor
+            # SCHEMA FIX: Use 'query' (string)
             run_input = {
-                "searchTerms": ["#BangaloreStartups", "Bengaluru 2026 gaps"],
-                "maxTweets": 20,
-                "sort": "Latest"
+                "query": "Bangalore 2026 startup gaps",
+                "section": "latest",
+                "maxPages": 1
             }
             run = apify_client.actor("iron-crawler/twitter-search").call(run_input=run_input)
             items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items(limit=20))
-            self.log_results("Twitter (IronCrawler)", items)
+            self.log_step("Twitter", items)
             
             tweets = "\n".join([i.get('full_text', i.get('text', '')) for i in items])
             self.all_raw_data.append(f"[TWITTER]: {tweets}")
@@ -81,14 +81,14 @@ class MasterScout:
     def scrape_instagram(self):
         print("\nStep 3: Instagram Scrape (ScrapeSmith)")
         try:
-            # FIX: Use hashtags array for better targeting
+            # SCHEMA FIX: Use 'hashtags' (array of strings)
             run_input = {
                 "hashtags": ["bangalorebusiness", "bengaluru2026"],
                 "resultsLimit": 10
             }
             run = apify_client.actor("scrapesmith/instagram-free-post-scraper").call(run_input=run_input)
             items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items(limit=10))
-            self.log_results("Instagram", items)
+            self.log_step("Instagram", items)
             
             captions = "\n".join([i.get('caption', '') for i in items if i.get('caption')])
             self.all_raw_data.append(f"[INSTAGRAM]: {captions}")
@@ -105,7 +105,7 @@ class MasterScout:
 
         TASK:
         1. Use Google Search to verify these platform insights against current March 2026 Bangalore news.
-        2. Identify 3 specific SMB business ideas.
+        2. Propose 3 specific SMB business ideas.
         
         INCLUDE FOR EACH IDEA:
         - 📊 Success Probability (%)
