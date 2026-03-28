@@ -1,5 +1,6 @@
 import os
 import sys
+import time  # Added for the buffer
 from datetime import datetime
 import constants
 
@@ -11,7 +12,7 @@ from twilio.rest import Client
 apify_client = ApifyClient(constants.APIFY_API_TOKEN)
 gemini_client = genai.Client(api_key=constants.GEMINI_API_KEY)
 
-# Handle Twilio gracefully while setup is pending
+# Handle Twilio gracefully
 try:
     if hasattr(constants, 'TWILIO_ACCOUNT_SID') and constants.TWILIO_ACCOUNT_SID:
         twilio_client = Client(constants.TWILIO_ACCOUNT_SID, constants.TWILIO_AUTH_TOKEN)
@@ -22,19 +23,35 @@ except Exception:
     TWILIO_READY = False
 
 def scrape_reddit():
-    print("Step 1: Scraping Reddit...")
+    print("Step 1: Scraping Reddit (Past 24 Hours)...")
     try:
-        # FIX: maxPosts must be >= 100 for this actor
         run_input = {
-            "queries": ["Bangalore startup gaps", "Bengaluru business problems 2026"],
-            "maxPosts": 100, 
+            "queries": ["Bangalore startup gaps", "Bengaluru business problems 2026", "Bangalore community help"],
+            "maxPosts": 200, 
+            "searchTime": "day",
+            "searchSort": "new",
             "includeComments": False
         }
         
-        run = apify_client.actor("peakydev/reddit-scraper-post-comments-users").call(run_input=run_input)
-        items = list(apify_client.dataset(run["defaultDatasetId"]).iterate_items(limit=20))
+        # .call() waits for the actor to finish, but we add a timeout for safety
+        print("Waiting for Apify actor to complete...")
+        run = apify_client.actor("peakydev/reddit-scraper-post-comments-users").call(
+            run_input=run_input,
+            wait_for_finish=180 # Wait up to 3 minutes
+        )
         
-        print(f"DEBUG: Scraper retrieved {len(items)} items.")
+        # A small 2-second buffer to ensure the Apify database is ready for reading
+        time.sleep(2)
+        
+        # Fetch up to 50 items
+        dataset_id = run["defaultDatasetId"]
+        items = list(apify_client.dataset(dataset_id).iterate_items(limit=50))
+        
+        print(f"DEBUG: Scraper retrieved {len(items)} fresh items.")
+        
+        if not items:
+            return "No new Reddit trends in the last 24 hours."
+            
         return "\n".join([item.get('title', 'No Title') for item in items])
 
     except Exception as e:
@@ -50,14 +67,17 @@ def analyze_and_send():
     # 2. Process with Gemini 2.5
     model_id = "gemini-2.5-flash"
     prompt = f"""
-    Reddit Context: {reddit_data}
+    Reddit Context (Last 24 Hours): 
+    {reddit_data}
+
     Task: 
-    1. Use Google Search to verify current 2026 market gaps in Bangalore.
-    2. Suggest 2 specific SMB ideas.
-    3. Format for WhatsApp with bold text and emojis.
+    1. Cross-reference these fresh Reddit complaints with live 2026 data via Google Search.
+    2. Identify 2 high-potential SMB gaps specifically for Bangalore.
+    3. Suggest actionable business ideas with a focus on quick execution.
+    4. Format for WhatsApp with bold headers and professional emojis.
     """
 
-    print(f"Step 2: Gemini ({model_id}) is searching Google...")
+    print(f"Step 2: Gemini ({model_id}) is searching Google for real-time verification...")
     try:
         response = gemini_client.models.generate_content(
             model=model_id,
@@ -71,7 +91,7 @@ def analyze_and_send():
         return
 
     # 3. Deliver Result
-    full_message = f"🚀 *Bangalore Business Scout* 🚀\n\n{final_output}"
+    full_message = f"🚀 *Bangalore 24h Business Scout* 🚀\n\n{final_output}"
 
     if TWILIO_READY:
         print("Step 3: Sending WhatsApp...")
@@ -86,7 +106,7 @@ def analyze_and_send():
             print(f"❌ Twilio delivery failed: {e}")
             print(f"\n--- FALLBACK (Terminal Output) ---\n{full_message}")
     else:
-        print("\n📢 TWILIO PENDING: Displaying result in terminal instead:")
+        print("\n📢 TWILIO PENDING: Results printed to terminal:")
         print("-" * 40)
         print(full_message)
         print("-" * 40)
